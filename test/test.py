@@ -41,9 +41,11 @@ async def read_256bit(dut):
     """Read a 256-bit result as 32 bytes MSB-first."""
     result = 0
     # First byte is already on uo_out
+    dut._log.info(f"read byte  0: {dut.uo_out.value}")
     result = int(dut.uo_out.value) & 0xFF
-    for _ in range(31):
+    for i in range(31):
         await pulse_rd(dut)
+        dut._log.info(f"read byte {i+1:2d}: {dut.uo_out.value}")
         result = (result << 8) | (int(dut.uo_out.value) & 0xFF)
     return result
 
@@ -64,6 +66,10 @@ async def test_inverse(dut):
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 2)
+
+    # Print raw logic values after reset to expose any x bits
+    dut._log.info(f"After reset uo_out:  {dut.uo_out.value}")
+    dut._log.info(f"After reset uio_out: {dut.uio_out.value}")
 
     # Verify ready is asserted (uio_out[0])
     assert (int(dut.uio_out.value) & 1) == 1, "ready should be high in LOAD state"
@@ -86,6 +92,8 @@ async def test_inverse(dut):
         assert False, "Timed out waiting for valid"
 
     dut._log.info("Valid asserted, reading result")
+    dut._log.info(f"Raw uo_out:  {dut.uo_out.value}")
+    dut._log.info(f"Raw uio_out: {dut.uio_out.value}")
 
     # Read result
     result = await read_256bit(dut)
