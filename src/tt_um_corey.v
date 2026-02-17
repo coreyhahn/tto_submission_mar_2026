@@ -5,8 +5,8 @@
  * Pin Map:
  *   ui_in[7:0]   = data byte in  (MSB-first, 32 bytes = 256 bits)
  *   uo_out[7:0]  = data byte out (MSB-first)
- *   uio_in[0]    = wr:    rising edge shifts ui_in into input register
- *   uio_in[1]    = rd:    rising edge shifts next output byte onto uo_out
+ *   uio_in[2]    = wr:    rising edge shifts ui_in into input register
+ *   uio_in[3]    = rd:    rising edge shifts next output byte onto uo_out
  *   uio_out[0]   = ready: high when accepting input bytes (LOAD state)
  *   uio_out[1]   = valid: high when result available (READ state)
  *
@@ -40,16 +40,16 @@ module tt_um_corey (
     // =========================================================================
 
     reg wr_prev, rd_prev;
-    wire wr_pulse = uio_in[0] & ~wr_prev;
-    wire rd_pulse = uio_in[1] & ~rd_prev;
+    wire wr_pulse = uio_in[2] & ~wr_prev;
+    wire rd_pulse = uio_in[3] & ~rd_prev;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wr_prev <= 1'b0;
             rd_prev <= 1'b0;
         end else begin
-            wr_prev <= uio_in[0];
-            rd_prev <= uio_in[1];
+            wr_prev <= uio_in[2];
+            rd_prev <= uio_in[3];
         end
     end
 
@@ -145,6 +145,6 @@ module tt_um_corey (
         .result    (inv_result)
     );
 
-    wire _unused = &{ena, inv_ready, uio_in[7:2], 1'b0};
+    wire _unused = &{ena, inv_ready, uio_in[7:4], uio_in[1:0], 1'b0};
 
 endmodule
