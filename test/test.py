@@ -3,38 +3,96 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import ClockCycles, RisingEdge
+
+# secp256k1 prime
+P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+
+# wr = uio_in[2], rd = uio_in[3]
+WR_BIT = 1 << 2
+RD_BIT = 1 << 3
+
+
+async def pulse_wr(dut):
+    """Pulse the wr signal (uio_in[2]) for one clock cycle."""
+    dut.uio_in.value = WR_BIT
+    await ClockCycles(dut.clk, 1)
+    dut.uio_in.value = 0
+    await ClockCycles(dut.clk, 1)
+
+
+async def pulse_rd(dut):
+    """Pulse the rd signal (uio_in[3]) for one clock cycle."""
+    dut.uio_in.value = RD_BIT
+    await ClockCycles(dut.clk, 1)
+    dut.uio_in.value = 0
+    await ClockCycles(dut.clk, 1)
+
+
+async def write_256bit(dut, value):
+    """Write a 256-bit value as 32 bytes MSB-first."""
+    for i in range(32):
+        byte = (value >> (8 * (31 - i))) & 0xFF
+        dut.ui_in.value = byte
+        await pulse_wr(dut)
+
+
+async def read_256bit(dut):
+    """Read a 256-bit result as 32 bytes MSB-first."""
+    result = 0
+    # First byte is already on uo_out
+    result = int(dut.uo_out.value) & 0xFF
+    for _ in range(31):
+        await pulse_rd(dut)
+        result = (result << 8) | (int(dut.uo_out.value) & 0xFF)
+    return result
 
 
 @cocotb.test()
-async def test_project(dut):
+async def test_inverse(dut):
+    """Test modular inverse of 2: inv(2) mod p = (p+1)/2."""
     dut._log.info("Start")
 
-    # Set the clock period to 10 us (100 KHz)
     clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     # Reset
-    dut._log.info("Reset")
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)
 
-    dut._log.info("Test project behavior")
+    # Verify ready is asserted (uio_out[0])
+    assert (int(dut.uio_out.value) & 1) == 1, "ready should be high in LOAD state"
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+    # Write input: a = 2
+    a = 2
+    expected = pow(a, P - 2, P)  # Fermat's little theorem: a^(p-2) mod p
+    dut._log.info(f"Input:    0x{a:064x}")
+    dut._log.info(f"Expected: 0x{expected:064x}")
 
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
+    await write_256bit(dut, a)
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+    # Wait for valid (uio_out[1])
+    dut._log.info("Waiting for computation to complete...")
+    for _ in range(800):
+        await RisingEdge(dut.clk)
+        if (int(dut.uio_out.value) >> 1) & 1:
+            break
+    else:
+        assert False, "Timed out waiting for valid"
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    dut._log.info("Valid asserted, reading result")
+
+    # Read result
+    result = await read_256bit(dut)
+    dut._log.info(f"Result:   0x{result:064x}")
+
+    assert result == expected, f"Mismatch: got 0x{result:064x}, expected 0x{expected:064x}"
+
+    # Verify: a * result mod p == 1
+    assert (a * result) % P == 1, "Verification failed: a * inv(a) != 1 mod p"
+    dut._log.info("PASS: inv(2) verified")
