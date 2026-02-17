@@ -82,10 +82,19 @@ async def test_inverse(dut):
 
     await write_256bit(dut, a)
 
-    # Wait for valid (uio_out[1])
+    # Wait for valid (uio_out[1]), log internal registers each cycle
+    inv = dut.user_project.u_inv
     dut._log.info("Waiting for computation to complete...")
-    for _ in range(800):
+    for cycle in range(800):
         await RisingEdge(dut.clk)
+        dut._log.info(
+            f"cycle {cycle:3d}: "
+            f"delta={inv.delta_reg.value} "
+            f"f={inv.f_reg.value} "
+            f"g={inv.g_reg.value} "
+            f"d={inv.d_reg.value} "
+            f"e={inv.e_reg.value}"
+        )
         if (int(dut.uio_out.value) >> 1) & 1:
             break
     else:

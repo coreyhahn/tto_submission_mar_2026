@@ -90,6 +90,7 @@ module byang_inv (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
+            input_reg   <= 'b0;
             input_valid <= 1'b0;
         end else if (load_input) begin
             input_valid <= 1'b0;
@@ -119,6 +120,7 @@ module byang_inv (
             load_input   <= 1'b0;
             output_valid <= 1'b0;
             counter      <= {`CTR_WIDTH{1'b0}};
+            output_reg   <= {`PRIME_BITS{1'b0}};
         end else begin
             load_input   <= 1'b0;
 

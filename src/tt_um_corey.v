@@ -88,9 +88,10 @@ module tt_um_corey (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state    <= S_LOAD;
-            byte_cnt <= 5'd0;
-            inv_go   <= 1'b0;
+            state     <= S_LOAD;
+            byte_cnt  <= 5'd0;
+            inv_go    <= 1'b0;
+            shift_reg <= 256'd0;
         end else begin
             inv_go <= 1'b0;
 
