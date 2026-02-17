@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: © 2024 Tiny Tapeout
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
+
+GL_TEST = os.environ.get("GATES") == "yes"
 
 # secp256k1 prime
 P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
@@ -82,19 +85,20 @@ async def test_inverse(dut):
 
     await write_256bit(dut, a)
 
-    # Wait for valid (uio_out[1]), log internal registers each cycle
-    inv = dut.user_project.u_inv
+    # Wait for valid (uio_out[1]), log internal registers each cycle (RTL only)
+    inv = dut.user_project.u_inv if not GL_TEST else None
     dut._log.info("Waiting for computation to complete...")
     for cycle in range(800):
         await RisingEdge(dut.clk)
-        dut._log.info(
-            f"cycle {cycle:3d}: "
-            f"delta={inv.delta_reg.value} "
-            f"f={inv.f_reg.value} "
-            f"g={inv.g_reg.value} "
-            f"d={inv.d_reg.value} "
-            f"e={inv.e_reg.value}"
-        )
+        if inv is not None:
+            dut._log.info(
+                f"cycle {cycle:3d}: "
+                f"delta={inv.delta_reg.value} "
+                f"f={inv.f_reg.value} "
+                f"g={inv.g_reg.value} "
+                f"d={inv.d_reg.value} "
+                f"e={inv.e_reg.value}"
+            )
         if (int(dut.uio_out.value) >> 1) & 1:
             break
     else:
