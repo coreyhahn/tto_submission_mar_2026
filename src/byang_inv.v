@@ -13,7 +13,8 @@ module byang_inv (
     // Output interface (valid/ready)
     output wire                      valid_out,
     input  wire                      ready_out,
-    output wire [`PRIME_BITS-1:0]    result
+    output wire [`PRIME_BITS-1:0]    result,
+    output wire [`CTR_WIDTH-1:0]     cycle_count
 );
 
     // =========================================================================
@@ -40,6 +41,7 @@ module byang_inv (
     // Output register
     reg [`PRIME_BITS-1:0] output_reg;
     reg                   output_valid;
+    reg [`CTR_WIDTH-1:0]  cycle_count_reg;
 
     // =========================================================================
     // Divstep instance (combinatorial)
@@ -60,6 +62,34 @@ module byang_inv (
         .d_out     (d_next),
         .e_out     (e_next)
     );
+
+    // =========================================================================
+    // Opportunistic double-step logic
+    // When g_next is even, the next divstep is trivial (just shift g,e; bump delta)
+    // so we fold it into the same clock cycle
+    // =========================================================================
+
+    wire g_next_even = ~g_next[0];
+
+    // Second g shift (arithmetic right shift by 1 more)
+    wire signed [`OP_WIDTH-1:0] g_double = g_next >>> 1;
+
+    // Second e correction + shift (same pattern as divstep e_corrected)
+    reg signed [`OP_WIDTH:0] e_double_raw;
+    always @(*) begin
+        if (e_next[0]) begin
+            if (e_next[`OP_WIDTH-1])
+                e_double_raw = {e_next[`OP_WIDTH-1], e_next} + $signed({{2{1'b0}}, `SECP256K1_P});
+            else
+                e_double_raw = {e_next[`OP_WIDTH-1], e_next} - $signed({{2{1'b0}}, `SECP256K1_P});
+        end else begin
+            e_double_raw = {e_next[`OP_WIDTH-1], e_next};
+        end
+    end
+    wire signed [`OP_WIDTH-1:0] e_double = e_double_raw >>> 1;
+
+    // Second delta increment
+    wire signed [`DELTA_WIDTH-1:0] delta_double = delta_next + 1;
 
     // =========================================================================
     // Sign correction (combinatorial, used in DONE state)
@@ -105,7 +135,8 @@ module byang_inv (
     // =========================================================================
 
     assign valid_out = output_valid;
-    assign result    = output_reg;
+    assign result      = output_reg;
+    assign cycle_count = cycle_count_reg;
 
     // =========================================================================
     // FSM + working registers + output register
@@ -118,9 +149,10 @@ module byang_inv (
         if (!rst_n) begin
             state        <= IDLE;
             load_input   <= 1'b0;
-            output_valid <= 1'b0;
-            counter      <= {`CTR_WIDTH{1'b0}};
-            output_reg   <= {`PRIME_BITS{1'b0}};
+            output_valid   <= 1'b0;
+            counter        <= {`CTR_WIDTH{1'b0}};
+            output_reg     <= {`PRIME_BITS{1'b0}};
+            cycle_count_reg <= {`CTR_WIDTH{1'b0}};
         end else begin
             load_input   <= 1'b0;
 
@@ -143,22 +175,45 @@ module byang_inv (
                 end
 
                 COMPUTE: begin
-                    f_reg     <= f_next;
-                    g_reg     <= g_next;
-                    d_reg     <= d_next;
-                    e_reg     <= e_next;
-                    delta_reg <= delta_next;
-                    counter   <= counter + 1'b1;
+                    if (g_next == 0) begin
+                        // Early termination: g reached zero
+                        f_reg     <= f_next;
+                        g_reg     <= g_next;
+                        d_reg     <= d_next;
+                        e_reg     <= e_next;
+                        delta_reg <= delta_next;
+                        counter   <= counter + 1'b1;
+                        state     <= DONE;
+                    end else if (g_next_even && counter < `NUM_ITERS - 1) begin
+                        // Double step: divstep + one trivial even shift
+                        f_reg     <= f_next;
+                        g_reg     <= g_double;
+                        d_reg     <= d_next;
+                        e_reg     <= e_double;
+                        delta_reg <= delta_double;
+                        counter   <= counter + 2'd2;
 
-                    if (counter == `NUM_ITERS - 1) begin
-                        state <= DONE;
+                        if (counter >= `NUM_ITERS - 2)
+                            state <= DONE;
+                    end else begin
+                        // Single step
+                        f_reg     <= f_next;
+                        g_reg     <= g_next;
+                        d_reg     <= d_next;
+                        e_reg     <= e_next;
+                        delta_reg <= delta_next;
+                        counter   <= counter + 1'b1;
+
+                        if (counter == `NUM_ITERS - 1)
+                            state <= DONE;
                     end
                 end
 
                 DONE: begin
                     if (output_free) begin
-                        output_reg   <= corrected_result;
-                        output_valid <= 1'b1;
+                        output_reg      <= corrected_result;
+                        cycle_count_reg <= counter;
+                        output_valid    <= 1'b1;
                         if (input_valid) begin
                             f_reg      <= $signed({1'b0, `SECP256K1_P});
                             g_reg      <= $signed({1'b0, input_reg});

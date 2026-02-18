@@ -63,8 +63,10 @@ module tt_um_corey (
 
     reg [1:0]   state;
     reg [4:0]   byte_cnt;
-    reg [255:0] shift_reg;
+    reg [271:0] shift_reg;
     reg         inv_go;
+    reg         next_loaded;
+    reg         pipe_pending;
 
     // =========================================================================
     // Inverter signals
@@ -73,14 +75,16 @@ module tt_um_corey (
     wire        inv_ready;
     wire        inv_done;
     wire [255:0] inv_result;
+    wire [`CTR_WIDTH-1:0] inv_cycles;
 
     // =========================================================================
     // Outputs
     // =========================================================================
 
     assign uio_oe  = 8'h03;
-    assign uio_out = {6'b0, (state == S_READ), (state == S_LOAD)};
-    assign uo_out  = shift_reg[255:248];
+    wire accepting = (state == S_LOAD) || (state == S_BUSY && !next_loaded);
+    assign uio_out = {6'b0, (state == S_READ), accepting};
+    assign uo_out  = shift_reg[271:264];
 
     // =========================================================================
     // Main FSM
@@ -88,17 +92,19 @@ module tt_um_corey (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state     <= S_LOAD;
-            byte_cnt  <= 5'd0;
-            inv_go    <= 1'b0;
-            shift_reg <= 256'd0;
+            state       <= S_LOAD;
+            byte_cnt    <= 5'd0;
+            inv_go      <= 1'b0;
+            shift_reg    <= 272'd0;
+            next_loaded  <= 1'b0;
+            pipe_pending <= 1'b0;
         end else begin
             inv_go <= 1'b0;
 
             case (state)
                 S_LOAD: begin
                     if (wr_pulse) begin
-                        shift_reg <= {shift_reg[247:0], ui_in};
+                        shift_reg <= {shift_reg[263:0], ui_in};
                         if (byte_cnt == 5'd31) begin
                             byte_cnt <= 5'd0;
                             inv_go   <= 1'b1;
@@ -111,18 +117,34 @@ module tt_um_corey (
 
                 S_BUSY: begin
                     if (inv_done) begin
-                        shift_reg <= inv_result;
-                        state     <= S_READ;
+                        shift_reg   <= {inv_result, 6'b0, inv_cycles};
+                        byte_cnt    <= 5'd0;
+                        next_loaded <= 1'b0;
+                        state       <= S_READ;
+                    end else if (wr_pulse && !next_loaded) begin
+                        shift_reg <= {shift_reg[263:0], ui_in};
+                        if (byte_cnt == 5'd31) begin
+                            byte_cnt     <= 5'd0;
+                            inv_go       <= 1'b1;
+                            next_loaded  <= 1'b1;
+                            pipe_pending <= 1'b1;
+                        end else begin
+                            byte_cnt <= byte_cnt + 5'd1;
+                        end
                     end
                 end
 
                 S_READ: begin
-                    if (wr_pulse) begin
-                        shift_reg <= {shift_reg[247:0], ui_in};
+                    if (wr_pulse && pipe_pending) begin
+                        byte_cnt     <= 5'd0;
+                        pipe_pending <= 1'b0;
+                        state        <= S_BUSY;
+                    end else if (wr_pulse) begin
+                        shift_reg <= {shift_reg[263:0], ui_in};
                         byte_cnt  <= 5'd1;
                         state     <= S_LOAD;
                     end else if (rd_pulse) begin
-                        shift_reg <= {shift_reg[247:0], 8'b0};
+                        shift_reg <= {shift_reg[263:0], 8'b0};
                     end
                 end
 
@@ -136,14 +158,15 @@ module tt_um_corey (
     // =========================================================================
 
     byang_inv u_inv (
-        .clk       (clk),
-        .rst_n     (rst_n),
-        .valid_in  (inv_go),
-        .ready_in  (inv_ready),
-        .a_in      (shift_reg),
-        .valid_out (inv_done),
-        .ready_out (state == S_BUSY),
-        .result    (inv_result)
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .valid_in    (inv_go),
+        .ready_in    (inv_ready),
+        .a_in        (shift_reg[255:0]),
+        .valid_out   (inv_done),
+        .ready_out   (state == S_BUSY),
+        .result      (inv_result),
+        .cycle_count (inv_cycles)
     );
 
     wire _unused = &{ena, inv_ready, uio_in[7:4], uio_in[1:0], 1'b0};
