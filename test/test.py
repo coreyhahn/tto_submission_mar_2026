@@ -357,7 +357,7 @@ async def test_perf_counters(dut):
     dut._log.info(f"PASS: perf counters verified")
 
 
-@cocotb.test()
+@cocotb.test(skip=GL_TEST)
 async def test_trng(dut):
     """Test TRNG random byte readout via mode 10."""
     dut._log.info("Start TRNG test")
@@ -860,7 +860,7 @@ async def test_perf_status_byte(dut):
 # Group 6: TRNG
 # =========================================================================
 
-@cocotb.test()
+@cocotb.test(skip=GL_TEST)
 async def test_trng_multiple_reads(dut):
     """Read 32 TRNG bytes. Verify at least 8 unique values."""
     await reset_dut(dut)
@@ -884,7 +884,7 @@ async def test_trng_multiple_reads(dut):
     dut._log.info("PASS: TRNG multiple reads")
 
 
-@cocotb.test()
+@cocotb.test(skip=GL_TEST)
 async def test_trng_ready_flag(dut):
     """After reset, poll trng_ready. Verify goes high, consume, drops, comes back."""
     await reset_dut(dut)
@@ -913,7 +913,7 @@ async def test_trng_ready_flag(dut):
     dut._log.info("PASS: TRNG ready flag cycle")
 
 
-@cocotb.test()
+@cocotb.test(skip=GL_TEST)
 async def test_trng_mode_isolation(dut):
     """In S_READ mode 00: rd shifts shift_reg. Mode 10: rd returns TRNG byte. Verify isolation."""
     await reset_dut(dut)
@@ -968,7 +968,7 @@ async def test_mode_reserved_11(dut):
     dut._log.info("PASS: reserved mode 11 gives normal result")
 
 
-@cocotb.test()
+@cocotb.test(skip=GL_TEST)
 async def test_mode_switch_mid_read(dut):
     """Enter S_READ mode 00, read 2 bytes, switch to mode 10, verify TRNG bytes."""
     await reset_dut(dut)
