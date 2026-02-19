@@ -14,7 +14,12 @@ module byang_inv (
     output wire                      valid_out,
     input  wire                      ready_out,
     output wire [`PRIME_BITS-1:0]    result,
-    output wire [`CTR_WIDTH-1:0]     cycle_count
+    output wire [`CTR_WIDTH-1:0]     cycle_count,
+
+    // Performance counters
+    output wire [`CTR_WIDTH-1:0]     perf_total_cycles,
+    output wire [`CTR_WIDTH-1:0]     perf_double_steps,
+    output wire [`CTR_WIDTH-1:0]     perf_triple_steps
 );
 
     // =========================================================================
@@ -37,6 +42,11 @@ module byang_inv (
 
     // Iteration counter
     reg [`CTR_WIDTH-1:0] counter;
+
+    // Performance counters (reset on each new computation)
+    reg [`CTR_WIDTH-1:0] perf_cycles_reg;
+    reg [`CTR_WIDTH-1:0] perf_double_reg;
+    reg [`CTR_WIDTH-1:0] perf_triple_reg;
 
     // Output register
     reg [`PRIME_BITS-1:0] output_reg;
@@ -92,6 +102,31 @@ module byang_inv (
     wire signed [`DELTA_WIDTH-1:0] delta_double = delta_next + 1;
 
     // =========================================================================
+    // Opportunistic triple-step logic
+    // When g_next[1:0] == 2'b00 (two trailing zeros), fold 3 iterations
+    // =========================================================================
+
+    wire g_double_even = g_next_even & ~g_next[1];
+
+    wire signed [`OP_WIDTH-1:0] g_triple = g_double >>> 1;
+
+    // Third e correction + shift (same pattern as e_double)
+    reg signed [`OP_WIDTH:0] e_triple_raw;
+    always @(*) begin
+        if (e_double[0]) begin
+            if (e_double[`OP_WIDTH-1])
+                e_triple_raw = {e_double[`OP_WIDTH-1], e_double} + $signed({{2{1'b0}}, `SECP256K1_P});
+            else
+                e_triple_raw = {e_double[`OP_WIDTH-1], e_double} - $signed({{2{1'b0}}, `SECP256K1_P});
+        end else begin
+            e_triple_raw = {e_double[`OP_WIDTH-1], e_double};
+        end
+    end
+    wire signed [`OP_WIDTH-1:0] e_triple = e_triple_raw >>> 1;
+
+    wire signed [`DELTA_WIDTH-1:0] delta_triple = delta_next + 2;
+
+    // =========================================================================
     // Sign correction (combinatorial, used in DONE state)
     // =========================================================================
 
@@ -137,6 +172,9 @@ module byang_inv (
     assign valid_out = output_valid;
     assign result      = output_reg;
     assign cycle_count = cycle_count_reg;
+    assign perf_total_cycles = perf_cycles_reg;
+    assign perf_double_steps = perf_double_reg;
+    assign perf_triple_steps = perf_triple_reg;
 
     // =========================================================================
     // FSM + working registers + output register
@@ -153,6 +191,9 @@ module byang_inv (
             counter        <= {`CTR_WIDTH{1'b0}};
             output_reg     <= {`PRIME_BITS{1'b0}};
             cycle_count_reg <= {`CTR_WIDTH{1'b0}};
+            perf_cycles_reg <= {`CTR_WIDTH{1'b0}};
+            perf_double_reg <= {`CTR_WIDTH{1'b0}};
+            perf_triple_reg <= {`CTR_WIDTH{1'b0}};
         end else begin
             load_input   <= 1'b0;
 
@@ -171,10 +212,15 @@ module byang_inv (
                         counter    <= {`CTR_WIDTH{1'b0}};
                         load_input <= 1'b1;
                         state      <= COMPUTE;
+                        perf_cycles_reg <= {`CTR_WIDTH{1'b0}};
+                        perf_double_reg <= {`CTR_WIDTH{1'b0}};
+                        perf_triple_reg <= {`CTR_WIDTH{1'b0}};
                     end
                 end
 
                 COMPUTE: begin
+                    perf_cycles_reg <= perf_cycles_reg + 1'b1;
+
                     if (g_next == 0) begin
                         // Early termination: g reached zero
                         f_reg     <= f_next;
@@ -184,6 +230,18 @@ module byang_inv (
                         delta_reg <= delta_next;
                         counter   <= counter + 1'b1;
                         state     <= DONE;
+                    end else if (g_double_even && counter < `NUM_ITERS - 2) begin
+                        // Triple step: divstep + two trivial even shifts
+                        f_reg     <= f_next;
+                        g_reg     <= g_triple;
+                        d_reg     <= d_next;
+                        e_reg     <= e_triple;
+                        delta_reg <= delta_triple;
+                        counter   <= counter + 2'd3;
+                        perf_triple_reg <= perf_triple_reg + 1'b1;
+
+                        if (counter >= `NUM_ITERS - 3)
+                            state <= DONE;
                     end else if (g_next_even && counter < `NUM_ITERS - 1) begin
                         // Double step: divstep + one trivial even shift
                         f_reg     <= f_next;
@@ -192,6 +250,7 @@ module byang_inv (
                         e_reg     <= e_double;
                         delta_reg <= delta_double;
                         counter   <= counter + 2'd2;
+                        perf_double_reg <= perf_double_reg + 1'b1;
 
                         if (counter >= `NUM_ITERS - 2)
                             state <= DONE;
@@ -223,6 +282,9 @@ module byang_inv (
                             counter    <= {`CTR_WIDTH{1'b0}};
                             load_input <= 1'b1;
                             state      <= COMPUTE;
+                            perf_cycles_reg <= {`CTR_WIDTH{1'b0}};
+                            perf_double_reg <= {`CTR_WIDTH{1'b0}};
+                            perf_triple_reg <= {`CTR_WIDTH{1'b0}};
                         end else begin
                             state <= IDLE;
                         end
