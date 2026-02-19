@@ -23,15 +23,9 @@ Data is loaded and read via an 8-bit byte-serial interface using a 272-bit shift
 - **S_BUSY**: Runs the divstep iterations. The `valid` flag is low. A second input can be pipelined during this state (see below).
 - **S_READ**: Result is available. The MSB byte appears on `uo_out` immediately; pulse `rd` to shift out the remaining 33 bytes.
 
-### SECDED error correction
+### Parity error detection
 
-Input data is protected by a (265,256) Hamming SECDED code. The 34-byte input contains 256 data bits and 9 check bits. On load, the design computes the syndrome and:
-
-- **Single-bit error (SEC)**: Automatically corrects the data before computation. The `sec_corrected` flag is set.
-- **Double-bit error (DED)**: Flags the error via `ded_detected`. Computation proceeds with uncorrected data.
-- **No error**: Both flags remain clear.
-
-Output data also includes SECDED check bits computed from the result.
+Input and output data are protected by a single even-parity bit. The 34-byte input contains 256 data bits and 1 parity bit (bit 15 of the shift register). On load, the design XORs all data bits with the received parity bit. If the result is non-zero, a `parity_error` flag is set on `uio_out[4]` and embedded in the output. The output also includes a parity bit computed from the result so the reader can verify data integrity.
 
 ### Pipelined input loading
 
@@ -43,8 +37,8 @@ The `mode` pins (`uio_in[5:4]`) select what appears in the output shift register
 
 | Mode | Description |
 |------|-------------|
-| `00` | Normal inverse result (256-bit result + 9-bit SECDED check + sec/ded flags) |
-| `01` | Performance counters: total cycles, double-step count, triple-step count, iteration count, and a status byte (`{sec, ded, trng_ready, 5'b0}`) |
+| `00` | Normal inverse result (256-bit result + parity bit + parity_error flag) |
+| `01` | Performance counters: total cycles, double-step count, triple-step count, iteration count, and a status byte (`{parity_error, trng_ready, 6'b0}`) |
 | `10` | TRNG random bytes (one byte per `rd` pulse, gated by `trng_ready`) |
 | `11` | Reserved (falls through to normal result) |
 
@@ -58,7 +52,7 @@ In simulation, an LFSR replaces the ring oscillators for deterministic testabili
 
 1. Assert `rst_n` low for at least 2 clock cycles, then release. Ensure `ena` is high.
 2. Confirm `ready` (`uio_out[0]`) is high, indicating the S_LOAD state.
-3. Write 34 bytes MSB-first: place each byte on `ui_in[7:0]` and pulse `wr` (`uio_in[2]`) high then low. The 34 bytes encode 256 data bits, 9 SECDED check bits, and 7 padding bits.
+3. Write 34 bytes MSB-first: place each byte on `ui_in[7:0]` and pulse `wr` (`uio_in[2]`) high then low. The 34 bytes encode 256 data bits, 1 parity bit, and 15 padding bits.
 4. After the 34th byte, computation starts automatically. Wait for `valid` (`uio_out[1]`) to go high (~335 clock cycles typical).
 5. Read the first result byte directly from `uo_out[7:0]`.
 6. Pulse `rd` (`uio_in[3]`) 33 times to shift out the remaining bytes, reading `uo_out` after each pulse.

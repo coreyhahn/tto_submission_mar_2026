@@ -16,54 +16,34 @@ P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 WR_BIT = 1 << 2
 RD_BIT = 1 << 3
 
-NUM_BYTES = 34  # 256 data + 9 check + 7 padding = 272 bits = 34 bytes
+NUM_BYTES = 34  # 256 data + 1 parity + 15 padding = 272 bits = 34 bytes
 
 
 # =========================================================================
-# SECDED helpers: (265, 256) Hamming code
+# Parity helper
 # =========================================================================
 
-def _data_to_pos():
-    """Map data bit index (0..255) to codeword position (skip powers of 2)."""
-    positions = []
-    pos = 1
-    while len(positions) < 256:
-        if pos & (pos - 1):  # not a power of 2
-            positions.append(pos)
-        pos += 1
-    return positions
-
-DATA_TO_POS = _data_to_pos()
-
-def secded_encode(data_256):
-    """Compute 9-bit SECDED check from 256-bit data integer."""
-    check = 0
-    for j in range(9):
-        bit = 0
-        for i in range(256):
-            if DATA_TO_POS[i] & (1 << j):
-                bit ^= (data_256 >> i) & 1
-        check |= (bit << j)
-    return check
+def parity_bit(data_256):
+    """Compute even parity (XOR of all bits) of a 256-bit integer."""
+    return bin(data_256).count('1') % 2
 
 
-def pack_input(data_256, check_9=None):
-    """Pack 256-bit data + 9-bit check into 272-bit shift register value.
+def pack_input(data_256, parity=None):
+    """Pack 256-bit data + 1 parity bit into 272-bit shift register value.
 
-    Layout: data[255:0] at bits [271:16], check[8:0] at bits [15:7], padding at [6:0].
+    Layout: data[255:0] at bits [271:16], parity at bit [15], padding at [14:0].
     """
-    if check_9 is None:
-        check_9 = secded_encode(data_256)
-    return (data_256 << 16) | (check_9 << 7)
+    if parity is None:
+        parity = parity_bit(data_256)
+    return (data_256 << 16) | (parity << 15)
 
 
 def unpack_output(val_272):
-    """Unpack 272-bit output into (result_256, check_9, sec, ded)."""
+    """Unpack 272-bit output into (result_256, parity, parity_err)."""
     result = (val_272 >> 16) & ((1 << 256) - 1)
-    check = (val_272 >> 7) & 0x1FF
-    sec = (val_272 >> 6) & 1
-    ded = (val_272 >> 5) & 1
-    return result, check, sec, ded
+    parity = (val_272 >> 15) & 1
+    parity_err = (val_272 >> 14) & 1
+    return result, parity, parity_err
 
 
 # =========================================================================
@@ -86,9 +66,9 @@ async def pulse_rd(dut):
     await ClockCycles(dut.clk, 1)
 
 
-async def write_input(dut, data_256, check_9=None):
-    """Write a 256-bit value with SECDED check as 34 bytes MSB-first."""
-    packed = pack_input(data_256, check_9)
+async def write_input(dut, data_256, parity=None):
+    """Write a 256-bit value with parity as 34 bytes MSB-first."""
+    packed = pack_input(data_256, parity)
     for i in range(NUM_BYTES):
         byte = (packed >> (8 * (NUM_BYTES - 1 - i))) & 0xFF
         dut.ui_in.value = byte
@@ -96,7 +76,7 @@ async def write_input(dut, data_256, check_9=None):
 
 
 async def read_output(dut):
-    """Read 34-byte result. Returns (result_256, check_9, sec, ded)."""
+    """Read 34-byte result. Returns (result_256, parity, parity_err)."""
     val = 0
     val = int(dut.uo_out.value) & 0xFF
     for i in range(NUM_BYTES - 1):
@@ -138,23 +118,22 @@ MODE11 = 0x30  # Reserved (bits [5:4] = 11)
 # Composite helpers
 # =========================================================================
 
-async def run_inverse(dut, a, check_9=None):
-    """Write input, wait for valid, read output. Returns (result, check, sec, ded)."""
-    await write_input(dut, a, check_9)
+async def run_inverse(dut, a, parity=None):
+    """Write input, wait for valid, read output. Returns (result, parity, parity_err)."""
+    await write_input(dut, a, parity)
     await wait_valid(dut)
     return await read_output(dut)
 
 
-async def check_inverse(dut, a, check_9=None):
+async def check_inverse(dut, a, parity=None):
     """Run inverse and assert correctness. Returns result."""
-    result, check, sec, ded = await run_inverse(dut, a, check_9)
+    result, par, par_err = await run_inverse(dut, a, parity)
     assert (a * result) % P == 1, \
         f"inv({a}) failed: ({a} * {result}) % P != 1"
-    expected_check = secded_encode(result)
-    assert check == expected_check, \
-        f"Output SECDED check mismatch for inv({a})"
-    assert sec == 0, f"SEC flag should be 0 for clean input (a={a})"
-    assert ded == 0, f"DED flag should be 0 for clean input (a={a})"
+    expected_parity = parity_bit(result)
+    assert par == expected_parity, \
+        f"Output parity mismatch for inv({a})"
+    assert par_err == 0, f"Parity error flag should be 0 for clean input (a={a})"
     return result
 
 
@@ -162,11 +141,10 @@ def read_status(dut):
     """Read uio_out into dict of named flags."""
     val = int(dut.uio_out.value)
     return {
-        'ready':      (val >> 0) & 1,
-        'valid':      (val >> 1) & 1,
-        'sec':        (val >> 4) & 1,
-        'ded':        (val >> 5) & 1,
-        'trng_ready': (val >> 6) & 1,
+        'ready':        (val >> 0) & 1,
+        'valid':        (val >> 1) & 1,
+        'parity_error': (val >> 4) & 1,
+        'trng_ready':   (val >> 6) & 1,
     }
 
 
@@ -228,49 +206,39 @@ async def test_inverse(dut):
     cycles = await wait_valid(dut)
     dut._log.info(f"Valid after {cycles} wait cycles")
 
-    result, check, sec, ded = await read_output(dut)
+    result, par, par_err = await read_output(dut)
     dut._log.info(f"Result:   0x{result:064x}")
-    dut._log.info(f"Check:    0x{check:03x}, SEC={sec} DED={ded}")
+    dut._log.info(f"Parity: {par}, ParityErr: {par_err}")
 
     assert result == expected, f"Mismatch: got 0x{result:064x}, expected 0x{expected:064x}"
     assert (a * result) % P == 1, "Verification failed: a * inv(a) != 1 mod p"
 
-    expected_check = secded_encode(result)
-    assert check == expected_check, f"Output SECDED check mismatch"
+    expected_parity = parity_bit(result)
+    assert par == expected_parity, f"Output parity mismatch"
+    assert par_err == 0, "Parity error flag should be 0 for clean input"
 
-    assert sec == 0, "SEC flag should be 0 for clean input"
-    assert ded == 0, "DED flag should be 0 for clean input"
-
-    dut._log.info("PASS: inv(2) verified with SECDED")
+    dut._log.info("PASS: inv(2) verified with parity")
 
 
 @cocotb.test()
-async def test_secded_correction(dut):
-    """Test SECDED single-bit error correction on input."""
-    dut._log.info("Start SECDED correction test")
+async def test_parity_error_detection(dut):
+    """Test parity error detection on input (wrong parity bit)."""
+    dut._log.info("Start parity error detection test")
     await reset_dut(dut)
 
     a = 42
-    expected = pow(a, P - 2, P)
+    correct_parity = parity_bit(a)
+    wrong_parity = 1 - correct_parity
 
-    error_bit = 100
-    corrupted_data = a ^ (1 << error_bit)
-    correct_check = secded_encode(a)
+    dut._log.info(f"Sending data with wrong parity (correct={correct_parity}, sent={wrong_parity})")
 
-    dut._log.info(f"Error in bit {error_bit}, check from correct data")
+    await write_input(dut, a, parity=wrong_parity)
+    await wait_valid(dut)
+    result, par, par_err = await read_output(dut)
 
-    await write_input(dut, corrupted_data, check_9=correct_check)
-
-    cycles = await wait_valid(dut)
-    result, check, sec, ded = await read_output(dut)
-    dut._log.info(f"Result: 0x{result:064x}")
-    dut._log.info(f"SEC={sec} DED={ded}")
-
-    assert result == expected, f"SECDED correction failed"
-    assert sec == 1, "SEC flag should be 1"
-    assert ded == 0, "DED flag should be 0"
-    assert (a * result) % P == 1
-    dut._log.info("PASS: SECDED single-bit correction verified")
+    assert par_err == 1, f"Parity error flag should be 1 for wrong parity, got {par_err}"
+    dut._log.info(f"Result: 0x{result:064x}, parity_err={par_err}")
+    dut._log.info("PASS: parity error detection verified")
 
 
 @cocotb.test()
@@ -293,7 +261,7 @@ async def test_pipelined_load(dut):
     assert (int(dut.uio_out.value) & 1) == 0, "ready should be low after next input loaded"
 
     cycles = await wait_valid(dut)
-    result1, _, _, _ = await read_output(dut)
+    result1, _, _ = await read_output(dut)
     assert result1 == expected1, "Result1 mismatch"
     assert (a1 * result1) % P == 1
     dut._log.info("PASS: inv(a1) verified")
@@ -302,7 +270,7 @@ async def test_pipelined_load(dut):
     await pulse_wr(dut)
 
     cycles = await wait_valid(dut)
-    result2, _, _, _ = await read_output(dut)
+    result2, _, _ = await read_output(dut)
     assert result2 == expected2, "Result2 mismatch"
     assert (a2 * result2) % P == 1
     dut._log.info("PASS: inv(a2) verified — pipelined load works")
@@ -343,7 +311,7 @@ async def test_perf_counters(dut):
     # shift_reg[261:252] = perf_double[9:0]
     # shift_reg[251:242] = perf_triple[9:0]
     # shift_reg[241:232] = cycle_count[9:0]
-    # shift_reg[231:224] = {sec, ded, trng_ready, 5'b0}
+    # shift_reg[231:224] = {parity_error, trng_ready, 6'b0}
     # shift_reg[223:0] = 0
     val = 0
     val = int(dut.uo_out.value) & 0xFF
@@ -462,9 +430,9 @@ async def test_inverse_powers_of_two(dut):
         a = 1 << k
         if a >= P:
             a = a % P
-        result, check, sec, ded = await run_inverse(dut, a)
+        result, par, par_err = await run_inverse(dut, a)
         assert (a * result) % P == 1, f"inv(2^{k}) failed"
-        assert sec == 0 and ded == 0, f"SECDED flags wrong for 2^{k}"
+        assert par_err == 0, f"parity error flag wrong for 2^{k}"
         dut._log.info(f"  inv(2^{k}) OK")
     dut._log.info("PASS: powers of two")
 
@@ -476,11 +444,11 @@ async def test_inverse_random_fuzz(dut):
     rng = random.Random(42)
     for i in range(20):
         a = rng.randint(1, P - 1)
-        result, check, sec, ded = await run_inverse(dut, a)
+        result, par, par_err = await run_inverse(dut, a)
         assert (a * result) % P == 1, f"Fuzz #{i}: inv(0x{a:064x}) failed"
-        expected_check = secded_encode(result)
-        assert check == expected_check, f"Fuzz #{i}: SECDED check mismatch"
-        assert sec == 0 and ded == 0
+        expected_parity = parity_bit(result)
+        assert par == expected_parity, f"Fuzz #{i}: parity mismatch"
+        assert par_err == 0
         dut._log.info(f"  Fuzz #{i} OK")
     dut._log.info("PASS: random fuzz (20 values)")
 
@@ -497,90 +465,43 @@ async def test_inverse_sequential(dut):
 
 
 # =========================================================================
-# Group 2: SECDED Exhaustive
+# Group 2: Parity
 # =========================================================================
 
 @cocotb.test()
-async def test_secded_bit_positions(dut):
-    """Single-bit error at various positions, verify correction + sec=1, ded=0."""
-    await reset_dut(dut)
-    a = 0xA5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5
-    correct_check = secded_encode(a)
-    expected = pow(a, P - 2, P)
-
-    for bit in [0, 1, 63, 64, 127, 128, 200, 254, 255]:
-        corrupted = a ^ (1 << bit)
-        await write_input(dut, corrupted, check_9=correct_check)
-        await wait_valid(dut)
-        result, check, sec, ded = await read_output(dut)
-        assert result == expected, f"SECDED correction failed at bit {bit}"
-        assert sec == 1, f"SEC should be 1 for bit {bit} error"
-        assert ded == 0, f"DED should be 0 for bit {bit} error"
-        dut._log.info(f"  Bit {bit} correction OK")
-    dut._log.info("PASS: SECDED bit position sweep")
-
-
-@cocotb.test()
-async def test_secded_check_bit_error(dut):
-    """Flip bit 0 of check (data clean). Verify result correct, sec=1, ded=0."""
-    await reset_dut(dut)
-    a = 42
-    correct_check = secded_encode(a)
-    corrupted_check = correct_check ^ 1  # flip bit 0 of check
-    expected = pow(a, P - 2, P)
-
-    await write_input(dut, a, check_9=corrupted_check)
-    await wait_valid(dut)
-    result, check, sec, ded = await read_output(dut)
-    assert result == expected, "Result wrong after check-bit error"
-    assert sec == 1, "SEC should be 1 for check bit error"
-    assert ded == 0, "DED should be 0 for single check bit error"
-    dut._log.info("PASS: SECDED check bit error")
-
-
-@cocotb.test()
-async def test_secded_double_bit_error(dut):
-    """Flip two data bits whose codeword positions XOR > 265. Verify ded=1."""
-    await reset_dut(dut)
-    a = 42
-    correct_check = secded_encode(a)
-
-    # Find two data bit positions whose codeword positions XOR to > 265 (out of range)
-    # DATA_TO_POS[0]=3, DATA_TO_POS[255]=265 → 3 XOR 265 = 266 > 265
-    bit_a, bit_b = 0, 255
-    syndrome = DATA_TO_POS[bit_a] ^ DATA_TO_POS[bit_b]
-    assert syndrome > 265, f"Need syndrome > 265, got {syndrome}"
-
-    corrupted = a ^ (1 << bit_a) ^ (1 << bit_b)
-    dut._log.info(f"Flipping bits {bit_a},{bit_b}, expected syndrome={syndrome}")
-
-    await write_input(dut, corrupted, check_9=correct_check)
-    await wait_valid(dut)
-    result, check, sec, ded = await read_output(dut)
-    assert ded == 1, f"DED should be 1 for double-bit error (sec={sec}, ded={ded})"
-    dut._log.info("PASS: SECDED double-bit error detected")
-
-
-@cocotb.test()
-async def test_secded_clean_input(dut):
-    """Clean input with matching check. Explicit assert sec=0, ded=0."""
+async def test_parity_clean_input(dut):
+    """Clean input with correct parity. Verify parity_error=0."""
     await reset_dut(dut)
     a = 0x123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0
-    result = await check_inverse(dut, a)  # check_inverse already asserts sec=0, ded=0
-    dut._log.info("PASS: SECDED clean input")
+    result = await check_inverse(dut, a)  # check_inverse asserts parity_error=0
+    dut._log.info("PASS: parity clean input")
 
 
 @cocotb.test()
-async def test_secded_output_check(dut):
-    """For 3 inputs, verify output check bits match secded_encode(result)."""
+async def test_parity_wrong_bit(dut):
+    """Send data with inverted parity bit. Verify parity_error=1."""
+    await reset_dut(dut)
+    a = 0xA5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5
+    wrong_parity = 1 - parity_bit(a)
+
+    await write_input(dut, a, parity=wrong_parity)
+    await wait_valid(dut)
+    result, par, par_err = await read_output(dut)
+    assert par_err == 1, f"parity_error should be 1 for wrong parity, got {par_err}"
+    dut._log.info("PASS: parity wrong bit detected")
+
+
+@cocotb.test()
+async def test_parity_output_check(dut):
+    """For 3 inputs, verify output parity matches parity_bit(result)."""
     await reset_dut(dut)
     for a in [5, 999, P - 3]:
-        result, check, sec, ded = await run_inverse(dut, a)
+        result, par, par_err = await run_inverse(dut, a)
         assert (a * result) % P == 1
-        expected_check = secded_encode(result)
-        assert check == expected_check, \
-            f"Output check mismatch for a={a}: got 0x{check:03x}, expected 0x{expected_check:03x}"
-    dut._log.info("PASS: SECDED output check bits verified")
+        expected_parity = parity_bit(result)
+        assert par == expected_parity, \
+            f"Output parity mismatch for a={a}: got {par}, expected {expected_parity}"
+    dut._log.info("PASS: output parity bits verified")
 
 
 # =========================================================================
@@ -589,13 +510,12 @@ async def test_secded_output_check(dut):
 
 @cocotb.test()
 async def test_reset_clears_state(dut):
-    """After reset, verify: ready=1, valid=0, sec=0, ded=0, uo_out=0x00."""
+    """After reset, verify: ready=1, valid=0, parity_error=0, uo_out=0x00."""
     await reset_dut(dut)
     status = read_status(dut)
     assert status['ready'] == 1, "ready should be 1 after reset"
     assert status['valid'] == 0, "valid should be 0 after reset"
-    assert status['sec'] == 0, "sec should be 0 after reset"
-    assert status['ded'] == 0, "ded should be 0 after reset"
+    assert status['parity_error'] == 0, "parity_error should be 0 after reset"
     assert (int(dut.uo_out.value) & 0xFF) == 0, "uo_out should be 0 after reset"
     dut._log.info("PASS: reset clears state")
 
@@ -769,7 +689,7 @@ async def test_pipeline_three_values(dut):
 
     # Wait for a1 result
     await wait_valid(dut)
-    result1, _, _, _ = await read_output(dut)
+    result1, _, _ = await read_output(dut)
     assert result1 == expected1, f"a1 result mismatch"
     assert (a1 * result1) % P == 1
 
@@ -782,7 +702,7 @@ async def test_pipeline_three_values(dut):
 
     # Wait for a2 result
     await wait_valid(dut)
-    result2, _, _, _ = await read_output(dut)
+    result2, _, _ = await read_output(dut)
     assert result2 == expected2, f"a2 result mismatch"
     assert (a2 * result2) % P == 1
 
@@ -792,7 +712,7 @@ async def test_pipeline_three_values(dut):
 
     # Wait for a3 result
     await wait_valid(dut)
-    result3, _, _, _ = await read_output(dut)
+    result3, _, _ = await read_output(dut)
     assert result3 == expected3, f"a3 result mismatch"
     assert (a3 * result3) % P == 1
 
@@ -819,7 +739,7 @@ async def test_pipeline_accepting_signal(dut):
 
     # Wait for a1 result
     await wait_valid(dut)
-    result1, _, _, _ = await read_output(dut)
+    result1, _, _ = await read_output(dut)
     assert (a1 * result1) % P == 1
 
     dut._log.info("PASS: accepting signal behavior")
@@ -900,29 +820,26 @@ async def test_perf_counter_range(dut):
 
 @cocotb.test()
 async def test_perf_status_byte(dut):
-    """Send SECDED-corrected input, read mode 01. Verify sec bit set in status byte."""
+    """Send input with wrong parity, read mode 01. Verify parity_error set in status byte."""
     await reset_dut(dut)
 
     a = 42
-    correct_check = secded_encode(a)
-    corrupted = a ^ (1 << 100)
+    wrong_parity = 1 - parity_bit(a)
 
-    await write_input(dut, corrupted, check_9=correct_check)
+    await write_input(dut, a, parity=wrong_parity)
     dut.uio_in.value = MODE01
     await wait_valid(dut)
 
     perf = await read_perf_raw(dut)
     dut.uio_in.value = 0
 
-    # Status byte: {sec, ded, trng_ready, 5'b0}
-    sec_bit = (perf['status'] >> 7) & 1
-    ded_bit = (perf['status'] >> 6) & 1
-    trng_bit = (perf['status'] >> 5) & 1
+    # Status byte: {parity_error, trng_ready, 6'b0}
+    par_err_bit = (perf['status'] >> 7) & 1
+    trng_bit = (perf['status'] >> 6) & 1
 
-    assert sec_bit == 1, f"SEC bit should be set in status byte, got 0x{perf['status']:02x}"
-    assert ded_bit == 0, f"DED bit should be 0, got 0x{perf['status']:02x}"
-    dut._log.info(f"Status byte: 0x{perf['status']:02x} (sec={sec_bit}, ded={ded_bit}, trng={trng_bit})")
-    dut._log.info("PASS: perf status byte with SEC")
+    assert par_err_bit == 1, f"parity_error bit should be set in status byte, got 0x{perf['status']:02x}"
+    dut._log.info(f"Status byte: 0x{perf['status']:02x} (par_err={par_err_bit}, trng={trng_bit})")
+    dut._log.info("PASS: perf status byte with parity error")
 
 
 # =========================================================================
@@ -1030,7 +947,7 @@ async def test_mode_reserved_11(dut):
     await wait_valid(dut)
 
     # Mode 11 is reserved, should fall into else branch (normal result)
-    result, check, sec, ded = await read_output(dut)
+    result, par, par_err = await read_output(dut)
     dut.uio_in.value = 0
     assert result == expected, f"Mode 11 should give normal result, got wrong value"
     assert (a * result) % P == 1
