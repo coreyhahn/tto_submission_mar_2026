@@ -6,12 +6,13 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = byang_pkg.vh byang_divstep.v byang_inv.v tt_um_corey.v
+PROJECT_SOURCES = byang_pkg.vh byang_divstep.v byang_inv.v secded_parity.v secded_correct.v trng.v tt_um_corey.v
 
 ifneq ($(GATES),yes)
 
 # RTL simulation:
 SIM_BUILD				= sim_build/rtl
+COMPILE_ARGS    += -DSIM
 VERILOG_SOURCES += $(addprefix $(SRC_DIR)/,$(PROJECT_SOURCES))
 
 else
