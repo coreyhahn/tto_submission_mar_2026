@@ -9,6 +9,21 @@ from cocotb.triggers import ClockCycles, RisingEdge
 
 GL_TEST = os.environ.get("GATES") == "yes"
 
+
+def safe_int(signal):
+    """Convert a cocotb signal to int, treating X/Z as 0."""
+    try:
+        return int(signal.value)
+    except ValueError:
+        # Gate-level sim: resolve X/Z bits to 0
+        raw = signal.value
+        result = 0
+        for i, bit in enumerate(reversed(str(raw))):
+            if bit == '1':
+                result |= (1 << i)
+        return result
+
+
 # secp256k1 prime
 P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
 
@@ -77,11 +92,10 @@ async def write_input(dut, data_256, parity=None):
 
 async def read_output(dut):
     """Read 34-byte result. Returns (result_256, parity, parity_err)."""
-    val = 0
-    val = int(dut.uo_out.value) & 0xFF
+    val = safe_int(dut.uo_out) & 0xFF
     for i in range(NUM_BYTES - 1):
         await pulse_rd(dut)
-        val = (val << 8) | (int(dut.uo_out.value) & 0xFF)
+        val = (val << 8) | (safe_int(dut.uo_out) & 0xFF)
     return unpack_output(val)
 
 
@@ -89,7 +103,7 @@ async def wait_valid(dut, timeout=800):
     """Wait for valid signal (uio_out[1]) to go high."""
     for cycle in range(timeout):
         await RisingEdge(dut.clk)
-        if (int(dut.uio_out.value) >> 1) & 1:
+        if (safe_int(dut.uio_out) >> 1) & 1:
             return cycle
     assert False, "Timed out waiting for valid"
 
@@ -139,7 +153,7 @@ async def check_inverse(dut, a, parity=None):
 
 def read_status(dut):
     """Read uio_out into dict of named flags."""
-    val = int(dut.uio_out.value)
+    val = safe_int(dut.uio_out)
     return {
         'ready':        (val >> 0) & 1,
         'valid':        (val >> 1) & 1,
@@ -150,10 +164,10 @@ def read_status(dut):
 
 async def read_perf_raw(dut):
     """Read raw 272-bit perf counter data in mode 01. Returns dict of fields."""
-    val = int(dut.uo_out.value) & 0xFF
+    val = safe_int(dut.uo_out) & 0xFF
     for _ in range(NUM_BYTES - 1):
         await pulse_rd(dut)
-        val = (val << 8) | (int(dut.uo_out.value) & 0xFF)
+        val = (val << 8) | (safe_int(dut.uo_out) & 0xFF)
     return {
         'total':   (val >> 262) & 0x3FF,
         'double':  (val >> 252) & 0x3FF,
@@ -167,7 +181,7 @@ async def wait_trng_ready(dut, timeout=200):
     """Wait for trng_ready (uio_out[6]) to go high. Returns cycle count."""
     for cycle in range(timeout):
         await RisingEdge(dut.clk)
-        if (int(dut.uio_out.value) >> 6) & 1:
+        if (safe_int(dut.uio_out) >> 6) & 1:
             return cycle
     assert False, "TRNG byte not ready within timeout"
 
@@ -175,7 +189,7 @@ async def wait_trng_ready(dut, timeout=200):
 async def read_trng_byte(dut):
     """Wait for TRNG ready, read byte, consume it. Returns byte value."""
     await wait_trng_ready(dut)
-    byte_val = int(dut.uo_out.value) & 0xFF
+    byte_val = safe_int(dut.uo_out) & 0xFF
     # Consume
     dut.uio_in.value = MODE10 | RD_BIT
     await ClockCycles(dut.clk, 1)
@@ -194,7 +208,7 @@ async def test_inverse(dut):
     dut._log.info("Start")
     await reset_dut(dut)
 
-    assert (int(dut.uio_out.value) & 1) == 1, "ready should be high in LOAD state"
+    assert (safe_int(dut.uio_out) & 1) == 1, "ready should be high in LOAD state"
 
     a = 2
     expected = pow(a, P - 2, P)
@@ -255,10 +269,10 @@ async def test_pipelined_load(dut):
     dut._log.info(f"Loading a1 = 0x{a1:064x}")
     await write_input(dut, a1)
 
-    assert (int(dut.uio_out.value) & 1) == 1, "ready should be high during S_BUSY"
+    assert (safe_int(dut.uio_out) & 1) == 1, "ready should be high during S_BUSY"
     dut._log.info(f"Loading a2 = 0x{a2:064x}")
     await write_input(dut, a2)
-    assert (int(dut.uio_out.value) & 1) == 0, "ready should be low after next input loaded"
+    assert (safe_int(dut.uio_out) & 1) == 0, "ready should be low after next input loaded"
 
     cycles = await wait_valid(dut)
     result1, _, _ = await read_output(dut)
@@ -314,10 +328,10 @@ async def test_perf_counters(dut):
     # shift_reg[231:224] = {parity_error, trng_ready, 6'b0}
     # shift_reg[223:0] = 0
     val = 0
-    val = int(dut.uo_out.value) & 0xFF
+    val = safe_int(dut.uo_out) & 0xFF
     for i in range(NUM_BYTES - 1):
         await pulse_rd(dut)
-        val = (val << 8) | (int(dut.uo_out.value) & 0xFF)
+        val = (val << 8) | (safe_int(dut.uo_out) & 0xFF)
 
     # Extract fields
     total_cycles = (val >> 262) & 0x3FF
@@ -362,7 +376,7 @@ async def test_trng(dut):
     trng_ready = False
     for cycle in range(200):
         await RisingEdge(dut.clk)
-        if (int(dut.uio_out.value) >> 6) & 1:
+        if (safe_int(dut.uio_out) >> 6) & 1:
             trng_ready = True
             break
 
@@ -378,10 +392,10 @@ async def test_trng(dut):
         # Wait for TRNG ready
         for cycle in range(200):
             await RisingEdge(dut.clk)
-            if (int(dut.uio_out.value) >> 6) & 1:
+            if (safe_int(dut.uio_out) >> 6) & 1:
                 break
 
-        byte_val = int(dut.uo_out.value) & 0xFF
+        byte_val = safe_int(dut.uo_out) & 0xFF
         bytes_read.append(byte_val)
         dut._log.info(f"TRNG byte {i}: 0x{byte_val:02x}")
 
@@ -516,7 +530,7 @@ async def test_reset_clears_state(dut):
     assert status['ready'] == 1, "ready should be 1 after reset"
     assert status['valid'] == 0, "valid should be 0 after reset"
     assert status['parity_error'] == 0, "parity_error should be 0 after reset"
-    assert (int(dut.uo_out.value) & 0xFF) == 0, "uo_out should be 0 after reset"
+    assert (safe_int(dut.uo_out) & 0xFF) == 0, "uo_out should be 0 after reset"
     dut._log.info("PASS: reset clears state")
 
 
@@ -725,17 +739,17 @@ async def test_pipeline_accepting_signal(dut):
     await reset_dut(dut)
 
     # Initially ready
-    assert (int(dut.uio_out.value) & 1) == 1, "should be accepting initially"
+    assert (safe_int(dut.uio_out) & 1) == 1, "should be accepting initially"
 
     a1, a2 = 7, 13
 
     # Load a1 — enters S_BUSY, still accepting (next_loaded=0)
     await write_input(dut, a1)
-    assert (int(dut.uio_out.value) & 1) == 1, "should accept during S_BUSY (no pipeline loaded)"
+    assert (safe_int(dut.uio_out) & 1) == 1, "should accept during S_BUSY (no pipeline loaded)"
 
     # Load a2 — next_loaded=1, should stop accepting
     await write_input(dut, a2)
-    assert (int(dut.uio_out.value) & 1) == 0, "should NOT accept after pipeline full"
+    assert (safe_int(dut.uio_out) & 1) == 0, "should NOT accept after pipeline full"
 
     # Wait for a1 result
     await wait_valid(dut)
@@ -755,11 +769,11 @@ async def test_pipeline_partial_read_then_new(dut):
     await wait_valid(dut)
 
     # Read only 3 bytes (partial)
-    _ = int(dut.uo_out.value) & 0xFF
+    _ = safe_int(dut.uo_out) & 0xFF
     await pulse_rd(dut)
-    _ = int(dut.uo_out.value) & 0xFF
+    _ = safe_int(dut.uo_out) & 0xFF
     await pulse_rd(dut)
-    _ = int(dut.uo_out.value) & 0xFF
+    _ = safe_int(dut.uo_out) & 0xFF
 
     # Now start a new input (wr in S_READ transitions to S_LOAD)
     result = await check_inverse(dut, 41)
@@ -911,18 +925,18 @@ async def test_trng_mode_isolation(dut):
     # Mode 00: read first byte of inverse result
     dut.uio_in.value = MODE00
     await ClockCycles(dut.clk, 1)
-    mode00_byte = int(dut.uo_out.value) & 0xFF
+    mode00_byte = safe_int(dut.uo_out) & 0xFF
 
     # Switch to mode 10: should see TRNG data, not shift_reg
     dut.uio_in.value = MODE10
     await ClockCycles(dut.clk, 1)
     await wait_trng_ready(dut)
-    mode10_byte = int(dut.uo_out.value) & 0xFF
+    mode10_byte = safe_int(dut.uo_out) & 0xFF
 
     # Switch back to mode 00: shift_reg should still be intact (rd in mode 10 doesn't shift it)
     dut.uio_in.value = MODE00
     await ClockCycles(dut.clk, 1)
-    mode00_byte_again = int(dut.uo_out.value) & 0xFF
+    mode00_byte_again = safe_int(dut.uo_out) & 0xFF
 
     assert mode00_byte == mode00_byte_again, \
         f"Mode 00 byte changed after mode 10 visit: 0x{mode00_byte:02x} vs 0x{mode00_byte_again:02x}"
@@ -965,21 +979,21 @@ async def test_mode_switch_mid_read(dut):
     # Mode 00: read 2 bytes
     dut.uio_in.value = MODE00
     await ClockCycles(dut.clk, 1)
-    byte0 = int(dut.uo_out.value) & 0xFF
+    byte0 = safe_int(dut.uo_out) & 0xFF
     await pulse_rd(dut)
-    byte1 = int(dut.uo_out.value) & 0xFF
+    byte1 = safe_int(dut.uo_out) & 0xFF
 
     # Switch to mode 10: TRNG
     dut.uio_in.value = MODE10
     await ClockCycles(dut.clk, 1)
     await wait_trng_ready(dut)
-    trng_byte = int(dut.uo_out.value) & 0xFF
+    trng_byte = safe_int(dut.uo_out) & 0xFF
     dut._log.info(f"Mode 00 bytes: 0x{byte0:02x}, 0x{byte1:02x}; TRNG byte: 0x{trng_byte:02x}")
 
     # Switch back to mode 00: verify shift_reg output (should be byte2 of result)
     dut.uio_in.value = MODE00
     await ClockCycles(dut.clk, 1)
-    byte2 = int(dut.uo_out.value) & 0xFF
+    byte2 = safe_int(dut.uo_out) & 0xFF
     dut._log.info(f"Mode 00 byte2: 0x{byte2:02x}")
     dut._log.info("PASS: mode switch mid-read")
 
@@ -1036,7 +1050,7 @@ async def test_edge_detector_rd(dut):
     await wait_valid(dut)
 
     # Read first byte (already visible)
-    byte0 = int(dut.uo_out.value) & 0xFF
+    byte0 = safe_int(dut.uo_out) & 0xFF
 
     # First rd rising edge
     dut.uio_in.value = RD_BIT
@@ -1046,7 +1060,7 @@ async def test_edge_detector_rd(dut):
     dut.uio_in.value = 0
     await ClockCycles(dut.clk, 1)
 
-    byte1 = int(dut.uo_out.value) & 0xFF
+    byte1 = safe_int(dut.uo_out) & 0xFF
 
     # Second rd rising edge
     dut.uio_in.value = RD_BIT
@@ -1055,7 +1069,7 @@ async def test_edge_detector_rd(dut):
     dut.uio_in.value = 0
     await ClockCycles(dut.clk, 1)
 
-    byte2 = int(dut.uo_out.value) & 0xFF
+    byte2 = safe_int(dut.uo_out) & 0xFF
 
     # We should have gotten 3 distinct byte positions (byte0 + 2 rd shifts)
     dut._log.info(f"Bytes: 0x{byte0:02x}, 0x{byte1:02x}, 0x{byte2:02x}")
