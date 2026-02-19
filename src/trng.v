@@ -29,13 +29,13 @@ module trng (
     end
     wire entropy_bit = lfsr[0];
 `else
-    // Hardware: 3 blackboxed ring oscillators (5, 7, 9 inverters) XOR'd
-    // Blackboxed to prevent Yosys from flagging intentional combinational loops
+    // Hardware: 3 ring oscillators (5, 7, 9 inverters) built from standard cells
+    // Direct cell instantiation avoids Yosys loop detection and unmapped cell errors
     wire ro5_out, ro7_out, ro9_out;
 
-    ring_osc #(.NUM_INV(5)) u_ro5 (.enable(enable), .out(ro5_out));
-    ring_osc #(.NUM_INV(7)) u_ro7 (.enable(enable), .out(ro7_out));
-    ring_osc #(.NUM_INV(9)) u_ro9 (.enable(enable), .out(ro9_out));
+    ring_osc5 u_ro5 (.enable(enable), .out(ro5_out));
+    ring_osc7 u_ro7 (.enable(enable), .out(ro7_out));
+    ring_osc9 u_ro9 (.enable(enable), .out(ro9_out));
 
     // XOR all ring outputs for raw entropy
     wire entropy_raw = ro5_out ^ ro7_out ^ ro9_out;

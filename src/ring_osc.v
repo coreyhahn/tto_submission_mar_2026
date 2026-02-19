@@ -1,50 +1,101 @@
 `default_nettype none
 
-// Parameterized gated ring oscillator
-// Blackboxed to prevent Yosys from flagging the intentional combinational loop.
-// In hardware, this is an odd-length inverter chain with enable gating.
-// When enable=0, output is driven low and the ring does not oscillate.
-// When enable=1, the ring oscillates at a frequency determined by gate delays.
+// Gated ring oscillator modules built from standard cells.
+// Using direct sg13g2 cell instantiation so Yosys treats them as
+// leaf cells — no combinational loop detection, no unmapped cell errors.
 //
-// For simulation (SIM defined), a stub is used — the TRNG module provides
-// its own LFSR-based entropy source instead.
+// When enable=0, the AND gate forces chain[0]=0 and the ring stops.
+// When enable=1, the ring oscillates at a frequency set by gate delays.
+//
+// For simulation (SIM defined), stubs output constant 0 since the
+// TRNG module uses its own LFSR-based entropy source.
 
 `ifdef SIM
 
-// Simulation stub: output is constant 0 (TRNG uses LFSR path instead)
-module ring_osc #(
-    parameter NUM_INV = 5
-) (
-    input  wire enable,
-    output wire out
-);
+module ring_osc5 (input wire enable, output wire out);
+    assign out = 1'b0;
+endmodule
+
+module ring_osc7 (input wire enable, output wire out);
+    assign out = 1'b0;
+endmodule
+
+module ring_osc9 (input wire enable, output wire out);
     assign out = 1'b0;
 endmodule
 
 `else
 
-(* blackbox *)
-module ring_osc #(
-    parameter NUM_INV = 5
-) (
+// 5-inverter gated ring oscillator
+module ring_osc5 (
     input  wire enable,
     output wire out
 );
+    (* keep *) wire [4:0] c;
 
-    (* keep *) wire [NUM_INV-1:0] chain;
+    sg13g2_and2_1 u_gate (.A(enable), .B(c[4]), .X(c[0]));
+    // c[0] is enable & c[4], but we need enable & ~c[4].
+    // Use: NAND(c[4], c[4]) = ~c[4], then AND with enable.
+    // Actually simpler: use inv on c[4] then AND with enable.
+    // But we want odd inversions total. Let's think carefully:
+    //
+    // Ring = AND gate + N inverters. For oscillation we need odd total inversions.
+    // AND gate contributes 0 inversions. N inverters contribute N.
+    // So N must be odd. With N=5: 5 inversions (odd) → oscillates.
+    //
+    // chain: and_out -> inv -> inv -> inv -> inv -> inv -> feedback to AND
 
-    // Gated feedback: first inverter AND'd with enable
-    assign chain[0] = enable & ~chain[NUM_INV-1];
+    wire and_out;
+    sg13g2_and2_1 u_and (.A(enable), .B(c[4]),  .X(and_out));
+    sg13g2_inv_1  u_i0  (.A(and_out), .Y(c[0]));
+    sg13g2_inv_1  u_i1  (.A(c[0]),    .Y(c[1]));
+    sg13g2_inv_1  u_i2  (.A(c[1]),    .Y(c[2]));
+    sg13g2_inv_1  u_i3  (.A(c[2]),    .Y(c[3]));
+    sg13g2_inv_1  u_i4  (.A(c[3]),    .Y(c[4]));
 
-    genvar i;
-    generate
-        for (i = 1; i < NUM_INV; i = i + 1) begin : gen_inv
-            assign chain[i] = ~chain[i-1];
-        end
-    endgenerate
+    assign out = c[4];
+endmodule
 
-    assign out = chain[NUM_INV-1];
+// 7-inverter gated ring oscillator
+module ring_osc7 (
+    input  wire enable,
+    output wire out
+);
+    (* keep *) wire [6:0] c;
 
+    wire and_out;
+    sg13g2_and2_1 u_and (.A(enable), .B(c[6]),  .X(and_out));
+    sg13g2_inv_1  u_i0  (.A(and_out), .Y(c[0]));
+    sg13g2_inv_1  u_i1  (.A(c[0]),    .Y(c[1]));
+    sg13g2_inv_1  u_i2  (.A(c[1]),    .Y(c[2]));
+    sg13g2_inv_1  u_i3  (.A(c[2]),    .Y(c[3]));
+    sg13g2_inv_1  u_i4  (.A(c[3]),    .Y(c[4]));
+    sg13g2_inv_1  u_i5  (.A(c[4]),    .Y(c[5]));
+    sg13g2_inv_1  u_i6  (.A(c[5]),    .Y(c[6]));
+
+    assign out = c[6];
+endmodule
+
+// 9-inverter gated ring oscillator
+module ring_osc9 (
+    input  wire enable,
+    output wire out
+);
+    (* keep *) wire [8:0] c;
+
+    wire and_out;
+    sg13g2_and2_1 u_and (.A(enable), .B(c[8]),  .X(and_out));
+    sg13g2_inv_1  u_i0  (.A(and_out), .Y(c[0]));
+    sg13g2_inv_1  u_i1  (.A(c[0]),    .Y(c[1]));
+    sg13g2_inv_1  u_i2  (.A(c[1]),    .Y(c[2]));
+    sg13g2_inv_1  u_i3  (.A(c[2]),    .Y(c[3]));
+    sg13g2_inv_1  u_i4  (.A(c[3]),    .Y(c[4]));
+    sg13g2_inv_1  u_i5  (.A(c[4]),    .Y(c[5]));
+    sg13g2_inv_1  u_i6  (.A(c[5]),    .Y(c[6]));
+    sg13g2_inv_1  u_i7  (.A(c[6]),    .Y(c[7]));
+    sg13g2_inv_1  u_i8  (.A(c[7]),    .Y(c[8]));
+
+    assign out = c[8];
 endmodule
 
 `endif
