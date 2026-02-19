@@ -31,20 +31,8 @@ module ring_osc5 (
     input  wire enable,
     output wire out
 );
+    // AND gate + 5 inverters = 5 inversions (odd) → oscillates
     (* keep *) wire [4:0] c;
-
-    sg13g2_and2_1 u_gate (.A(enable), .B(c[4]), .X(c[0]));
-    // c[0] is enable & c[4], but we need enable & ~c[4].
-    // Use: NAND(c[4], c[4]) = ~c[4], then AND with enable.
-    // Actually simpler: use inv on c[4] then AND with enable.
-    // But we want odd inversions total. Let's think carefully:
-    //
-    // Ring = AND gate + N inverters. For oscillation we need odd total inversions.
-    // AND gate contributes 0 inversions. N inverters contribute N.
-    // So N must be odd. With N=5: 5 inversions (odd) → oscillates.
-    //
-    // chain: and_out -> inv -> inv -> inv -> inv -> inv -> feedback to AND
-
     wire and_out;
     sg13g2_and2_1 u_and (.A(enable), .B(c[4]),  .X(and_out));
     sg13g2_inv_1  u_i0  (.A(and_out), .Y(c[0]));
