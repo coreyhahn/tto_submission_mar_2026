@@ -22,6 +22,7 @@ project:
     - "byang_inv.v"
     - "secded_parity.v"
     - "secded_correct.v"
+    - "ring_osc.v"
     - "trng.v"
     - "tt_um_corey.v"
 

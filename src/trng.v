@@ -29,39 +29,16 @@ module trng (
     end
     wire entropy_bit = lfsr[0];
 `else
-    // Hardware: 3 ring oscillators with different lengths
-    // Gated by enable: feedback AND'd with enable so oscillators stop when disabled
-    (* keep *) wire [4:0] ro5;
-    (* keep *) wire [6:0] ro7;
-    (* keep *) wire [8:0] ro9;
+    // Hardware: 3 blackboxed ring oscillators (5, 7, 9 inverters) XOR'd
+    // Blackboxed to prevent Yosys from flagging intentional combinational loops
+    wire ro5_out, ro7_out, ro9_out;
 
-    // 5-inverter ring oscillator (gated)
-    assign ro5[0] = enable & ~ro5[4];
-    genvar i;
-    generate
-        for (i = 1; i < 5; i = i + 1) begin : gen_ro5
-            assign ro5[i] = ~ro5[i-1];
-        end
-    endgenerate
-
-    // 7-inverter ring oscillator (gated)
-    assign ro7[0] = enable & ~ro7[6];
-    generate
-        for (i = 1; i < 7; i = i + 1) begin : gen_ro7
-            assign ro7[i] = ~ro7[i-1];
-        end
-    endgenerate
-
-    // 9-inverter ring oscillator (gated)
-    assign ro9[0] = enable & ~ro9[8];
-    generate
-        for (i = 1; i < 9; i = i + 1) begin : gen_ro9
-            assign ro9[i] = ~ro9[i-1];
-        end
-    endgenerate
+    ring_osc #(.NUM_INV(5)) u_ro5 (.enable(enable), .out(ro5_out));
+    ring_osc #(.NUM_INV(7)) u_ro7 (.enable(enable), .out(ro7_out));
+    ring_osc #(.NUM_INV(9)) u_ro9 (.enable(enable), .out(ro9_out));
 
     // XOR all ring outputs for raw entropy
-    wire entropy_raw = ro5[4] ^ ro7[6] ^ ro9[8];
+    wire entropy_raw = ro5_out ^ ro7_out ^ ro9_out;
 
     // Double-flop synchronizer into clock domain
     reg entropy_ff1, entropy_ff2;
